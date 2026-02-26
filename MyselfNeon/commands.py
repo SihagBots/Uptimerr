@@ -18,7 +18,7 @@ async def get_dashboard(user_id, page=1):
     
     # --- Empty State ---
     if not urls and page == 1:
-        return "📂 **__List is Empty!__**\n__Use__ `/add https://site.com` __to start.__", None
+        return "📂 **__List is Empty!__**\n__Use__ `/add https://site.com MySite` __to start.__", None
     
     text = f"📊 **__Dashboard (Page {page})__**\n__Total Monitors: {total_count}__\n\n"
     
@@ -26,6 +26,7 @@ async def get_dashboard(user_id, page=1):
     for i, data in enumerate(urls):
         idx = (page - 1) * limit + i + 1
         status = data.get('status', 'PENDING')
+        display_name = data.get('name') or data.get('url')
         
         # Icons
         s_icon = {
@@ -40,8 +41,8 @@ async def get_dashboard(user_id, page=1):
 
         # Styled List Item
         text += (
-            f"**__{idx}. `{data['url']}`__**\n"
-            f"   **╚** [{s_icon}]({data['url']}) __**{status}** ⚡ {resp}ms 📈 {uptime_pct}%__\n\n"
+            f"**__{idx}. {display_name}__**\n"
+            f"   **╚** {s_icon} __**{status}** ⚡ {resp}ms 📈 {uptime_pct}%__\n\n"
         )
     
     # --- Button Logic (Emoji Only) ---
@@ -75,7 +76,7 @@ async def start_cmd(client, message):
         "**__I use Adaptive Intelligence ( Head & Get ) to Monitor your Websites.__**\n"
         "**__Created By @MyselfNeon__**\n\n"
         "**__Commands:__**\n"
-        "__/add {url} – Monitor a new URL__\n"
+        "__/add {url} {name} – Monitor a new URL__\n"
         "__/del {url} – Remove an URL__\n"
         "__/list – View URLs Dashboard__"
     )
@@ -83,11 +84,12 @@ async def start_cmd(client, message):
 
 @Client.on_message(filters.command("add") & filters.private)
 async def add_cmd(client, message):
-    if len(message.command) < 2:
-        return await message.reply_text("⚠️ **__Usage:** /add https://google.com__")
+    if len(message.command) < 3:
+        return await message.reply_text("⚠️ **__Usage:** /add https://google.com Google__")
     
     user_id = message.chat.id
-    url = message.command[1]
+    url = message.command[1].strip()
+    name = " ".join(message.command[2:]).strip()
 
     # --- 1. Check URL Limit (Max 5 for Users, Infinite for Admin) ---
     # We fetch only 1 item just to get the 'total_count' efficiently
@@ -109,9 +111,13 @@ async def add_cmd(client, message):
     if await db.is_url_exist(user_id, url):
         return await message.reply_text("⚠️ **__URL already exists.__**")
         
-    success, msg = await db.add_url(user_id, url)
+    success, msg = await db.add_url(user_id, url, name)
     if success:
-        await message.reply_text(f"✅ **__Added:__** `{url}`\n**__State: Pending__**")
+        await message.reply_text(
+            f"✅ **__Added:__** __{name}__\n"
+            f"🔗 **__URL Saved:__** `{url}`\n"
+            "**__State: Pending__**"
+        )
     else:
         await message.reply_text(f"❌ **__Error:__** __{msg}__")
 
@@ -168,7 +174,7 @@ async def force_refresh_callback(client, query):
 # --- Edit Commands ---
 COMMANDS_TEXT = """
 start - 🚀 𝘊𝘩𝘦𝘤𝘬 𝘉𝘰𝘵 𝘈𝘭𝘪𝘷𝘦
-add - ✅ 𝘈𝘥𝘥 𝘢 𝘕𝘦𝘸 𝘜𝘙𝘓
+add - ✅ 𝘈𝘥𝘥 𝘜𝘙𝘓 + 𝘕𝘢𝘮𝘦
 del - 🚫 𝘋𝘦𝘭𝘦𝘵𝘦 𝘢𝘯 𝘜𝘙𝘓
 stats - ⁉️ 𝘊𝘩𝘦𝘤𝘬 𝘚𝘵𝘢𝘵𝘶𝘴 𝘰𝘧 𝘜𝘙𝘓𝘴
 """
