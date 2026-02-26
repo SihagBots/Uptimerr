@@ -68,6 +68,7 @@ async def smart_check(session, url):
 async def process_entry(app, session, entry):
     user_id = entry['user_id']
     url = entry['url']
+    name = entry.get('name') or url
     entry_id = entry['_id']
     
     is_up, code, latency = await smart_check(session, url)
@@ -94,9 +95,9 @@ async def process_entry(app, session, entry):
     if new_status != prev_status:
         state_cache[unique_key] = new_status
         if entry.get('alert_mode') != "SILENT":
-            await send_alert(app, user_id, url, new_status, code, latency)
+            await send_alert(app, user_id, name, url, new_status, code, latency)
 
-async def send_alert(app, user_id, url, status, code, latency):
+async def send_alert(app, user_id, name, url, status, code, latency):
     icon = {
         "ONLINE": "🟢", "SLOW": "🟡", "DOWN": "🔴", 
         "PAUSED": "⛔️", "RATE-LIMITED": "⚠️"
@@ -106,7 +107,7 @@ async def send_alert(app, user_id, url, status, code, latency):
     
     text = (
         f"{icon} **{msg_title}**\n\n"
-        f"🔗 **URL:** `{url}`\n"
+        f"🏷 **Monitor:** `{name}`\n"
         f"📝 **Info:** `{code}`\n"
         f"⚡ **Latency:** `{latency}ms`\n"
     )

@@ -23,9 +23,10 @@ class Database:
         # Index for user lookups and pagination
         await self.col.create_index([("user_id", 1)])
 
-    def new_url(self, user_id, url):
+    def new_url(self, user_id, url, name):
         return dict(
             user_id=user_id,
+            name=name,
             url=url,
             status="PENDING",     # ONLINE, DOWN, SLOW, PAUSED, RATE-LIMITED
             last_code="200",
@@ -39,9 +40,9 @@ class Database:
             added_at=time.time()
         )
 
-    async def add_url(self, user_id, url):
+    async def add_url(self, user_id, url, name):
         # Limit check removed here. It is handled in commands.py
-        url_dict = self.new_url(user_id, url)
+        url_dict = self.new_url(user_id, url, name)
         await self.col.insert_one(url_dict)
         return True, "Added"
 
