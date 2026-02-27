@@ -23,9 +23,10 @@ class Database:
         # Index for user lookups and pagination
         await self.col.create_index([("user_id", 1)])
 
-    def new_url(self, user_id, url):
+    def new_url(self, user_id, url, name):
         return dict(
             user_id=user_id,
+            name=name,
             url=url,
             status="PENDING",     # ONLINE, DOWN, SLOW, PAUSED, RATE-LIMITED
             last_code="200",
@@ -39,9 +40,9 @@ class Database:
             added_at=time.time()
         )
 
-    async def add_url(self, user_id, url):
+    async def add_url(self, user_id, url, name):
         # Limit check removed here. It is handled in commands.py
-        url_dict = self.new_url(user_id, url)
+        url_dict = self.new_url(user_id, url, name)
         await self.col.insert_one(url_dict)
         return True, "Added"
 
@@ -58,6 +59,20 @@ class Database:
         urls = await cursor.to_list(length=limit)
         total_count = await self.col.count_documents({"user_id": user_id})
         return urls, total_count
+
+
+    async def set_dashboard_channel(self, user_id, channel_id):
+        await self.config.update_one(
+            {"_id": f"dashboard_channel:{user_id}"},
+            {"$set": {"channel_id": channel_id, "user_id": user_id}},
+            upsert=True
+        )
+
+    async def get_dashboard_channel(self, user_id):
+        data = await self.config.find_one({"_id": f"dashboard_channel:{user_id}"})
+        if not data:
+            return None
+        return data.get("channel_id")
 
     async def get_due_urls(self):
         now = time.time()

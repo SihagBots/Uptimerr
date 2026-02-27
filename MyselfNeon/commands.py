@@ -5,179 +5,241 @@
 # Telegram: https://t.me/MyelfNeon
 # ---------------------------------------------------
 
-from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
-from .db import db
-from info import ADMIN
+from datetime import datetime
 import asyncio
 
-# --- Helper: Generate Dashboard UI ---
-async def get_dashboard(user_id, page=1):
-    limit = 6
-    urls, total_count = await db.get_urls_paginated(user_id, page, limit)
-    
-    # --- Empty State ---
-    if not urls and page == 1:
-        return "📂 **__List is Empty!__**\n__Use__ `/add https://site.com` __to start.__", None
-    
-    text = f"📊 **__Dashboard (Page {page})__**\n__Total Monitors: {total_count}__\n\n"
-    
-    # --- Generate List Text ---
-    for i, data in enumerate(urls):
-        idx = (page - 1) * limit + i + 1
-        status = data.get('status', 'PENDING')
-        
-        # Icons
-        s_icon = {
-            "ONLINE": "🟢", "DOWN": "🔴", "SLOW": "🟡", 
-            "PAUSED": "⛔️", "PENDING": "⏳", "RATE-LIMITED": "⚠️"
-        }.get(status, "❓")
-        
-        resp = data.get('response_time', 0)
-        uptime_pct = 0
-        if data.get('total_checks', 0) > 0:
-            uptime_pct = round((data['uptime_count'] / data['total_checks']) * 100, 1)
+from pyrogram import Client, filters
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
 
-        # Styled List Item
+from .db import db
+from info import ADMIN
+
+
+def _admin_ids():
+    return ADMIN if isinstance(ADMIN, list) else [ADMIN]
+
+
+def _format_last_check(ts):
+    if not ts:
+        return "Not checked yet"
+    dt = datetime.fromtimestamp(ts)
+    return dt.strftime("%d %b %I:%M %p").replace("AM", "am").replace("PM", "pm")
+
+
+def _normalize_name(name, url):
+    cleaned = (name or "").strip()
+    if cleaned:
+        return cleaned
+    return url
+
+
+def _parse_add_args(command):
+    """Supports both:
+    1) /add <url> <name>
+    2) /add <name> <url>
+    """
+    if len(command) < 3:
+        return None, None
+
+    arg1 = command[1].strip()
+    arg2_plus = " ".join(command[2:]).strip()
+
+    if arg1.startswith(("http://", "https://")):
+        return arg1, arg2_plus
+
+    last = command[-1].strip()
+    if last.startswith(("http://", "https://")):
+        return last, " ".join(command[1:-1]).strip()
+
+    return None, None
+
+
+async def get_dashboard(user_id, page=1, owner_id=None):
+    limit = 6
+    owner_id = owner_id or user_id
+    urls, total_count = await db.get_urls_paginated(owner_id, page, limit)
+
+    if not urls and page == 1:
+        return "📂 **__List is Empty!__**\n__Use__ `/add https://site.com MySite` __to start.__", None
+
+    latest_check = max((item.get("last_checked", 0) for item in urls), default=0)
+    text = (
+        "⏰ **UpTimer Bot**\n"
+        f"🕒 **Last check:** `{_format_last_check(latest_check)}`\n"
+        f"📦 **Total Monitors:** `{total_count}`\n\n"
+    )
+
+    status_map = {
+        "ONLINE": "🟢 Active ✅",
+        "SLOW": "🟡 Slow Response",
+        "DOWN": "🔴 Down ❌",
+        "PAUSED": "⛔ Paused",
+        "PENDING": "⏳ Pending",
+        "RATE-LIMITED": "⚠️ Rate Limited",
+    }
+
+    for data in urls:
+        status = data.get("status", "PENDING")
+        display_name = _normalize_name(data.get("name"), data.get("url"))
+        if not display_name.startswith("@") and display_name.replace("_", "").isalnum() and " " not in display_name:
+            bot_label = f"@{display_name}"
+        else:
+            bot_label = display_name
+
+        resp = data.get("response_time", 0)
+        status_text = status_map.get(status, f"❓ {status}")
+
         text += (
-            f"**__{idx}. `{data['url']}`__**\n"
-            f"   **╚** [{s_icon}]({data['url']}) __**{status}** ⚡ {resp}ms 📈 {uptime_pct}%__\n\n"
+            f"╰┈➤ **Bot :** {bot_label}\n"
+            f"╰┈➤ **Ping :** {resp} ms\n"
+            f"╰┈➤ **Status :** {status_text}.\n\n"
         )
-    
-    # --- Button Logic (Emoji Only) ---
+
     buttons = []
     nav_row = []
 
-    # 1. Back Button (⬅️) - Only if not on Page 1
     if page > 1:
-        nav_row.append(InlineKeyboardButton("⬅️", callback_data=f"list_page_{page-1}"))
-    
-    # 2. Force Refresh Button (🔄) - Always Present
-    nav_row.append(InlineKeyboardButton("🔄", callback_data=f"force_refresh_{page}"))
-    
-    # 3. Next Button (➡️) - Only if more pages exist
+        nav_row.append(InlineKeyboardButton("⬅️", callback_data=f"list_page_{page-1}_{owner_id}"))
+
+    nav_row.append(InlineKeyboardButton("🔄 Refresh", callback_data=f"force_refresh_{page}_{owner_id}"))
+
     if (page * limit) < total_count:
-        nav_row.append(InlineKeyboardButton("➡️", callback_data=f"list_page_{page+1}"))
-            
-    # Add the navigation row if it has buttons
+        nav_row.append(InlineKeyboardButton("➡️", callback_data=f"list_page_{page+1}_{owner_id}"))
+
     if nav_row:
         buttons.append(nav_row)
-    
-    # "Close" button has been removed as requested
-    
+
     return text, InlineKeyboardMarkup(buttons)
 
-# --- Commands ---
+
 @Client.on_message(filters.command("start") & filters.private)
 async def start_cmd(client, message):
     text = (
         "👋 **__Professional Uptime Monitor__**\n\n"
-        "**__I use Adaptive Intelligence ( Head & Get ) to Monitor your Websites.__**\n"
-        "**__Created By @MyselfNeon__**\n\n"
         "**__Commands:__**\n"
-        "__/add {url} – Monitor a new URL__\n"
-        "__/del {url} – Remove an URL__\n"
-        "__/list – View URLs Dashboard__"
+        "__/add {url} {name} – Add monitor__\n"
+        "__/del {url} – Remove monitor__\n"
+        "__/list – Show dashboard__\n"
+        "__/add_channel {channel_id} – Send admin dashboard to channel__"
     )
     await message.reply_text(text)
 
+
 @Client.on_message(filters.command("add") & filters.private)
 async def add_cmd(client, message):
-    if len(message.command) < 2:
-        return await message.reply_text("⚠️ **__Usage:** /add https://google.com__")
-    
-    user_id = message.chat.id
-    url = message.command[1]
+    url, name = _parse_add_args(message.command)
+    if not url:
+        return await message.reply_text(
+            "⚠️ **__Usage:__**\n"
+            "`/add https://google.com Google`\n"
+            "`/add Google https://google.com`"
+        )
 
-    # --- 1. Check URL Limit (Max 5 for Users, Infinite for Admin) ---
-    # We fetch only 1 item just to get the 'total_count' efficiently
+    user_id = message.chat.id
+    name = _normalize_name(name, url)
+
     _, total_count = await db.get_urls_paginated(user_id, 1, 1)
-    
-    admin_ids = ADMIN if isinstance(ADMIN, list) else [ADMIN]
-    
-    # If user is NOT admin AND has 5 or more URLs
-    if user_id not in admin_ids and total_count >= 5:
+    if user_id not in _admin_ids() and total_count >= 5:
         return await message.reply_text(
             "⛔️ **__Limit Reached!__**\n\n"
             "__Free users are limited to 5 URLs.__\n"
             "__Please remove a URL or contact Admin.__"
         )
 
-    if not url.startswith(("http://", "https://")):
-        return await message.reply_text("⛔️ **__URL must start with http/https__**")
-        
     if await db.is_url_exist(user_id, url):
         return await message.reply_text("⚠️ **__URL already exists.__**")
-        
-    success, msg = await db.add_url(user_id, url)
+
+    success, msg = await db.add_url(user_id, url, name)
     if success:
-        await message.reply_text(f"✅ **__Added:__** `{url}`\n**__State: Pending__**")
+        await message.reply_text(
+            f"✅ **__Added:__** __{name}__\n"
+            f"🔗 **__URL Saved:__** `{url}`\n"
+            "**__State: Pending__**"
+        )
     else:
         await message.reply_text(f"❌ **__Error:__** __{msg}__")
+
+
+@Client.on_message(filters.command("add_channel") & filters.private & filters.user(ADMIN))
+async def add_channel_cmd(client, message):
+    if len(message.command) < 2:
+        return await message.reply_text("⚠️ **__Usage:** /add_channel -1001234567890__")
+
+    try:
+        channel_id = int(message.command[1].strip())
+    except ValueError:
+        return await message.reply_text("❌ **__Invalid channel id.__**")
+
+    await db.set_dashboard_channel(message.chat.id, channel_id)
+    await message.reply_text(f"✅ **__Channel saved:__** `{channel_id}`")
+
 
 @Client.on_message(filters.command("del") & filters.private)
 async def del_cmd(client, message):
     if len(message.command) < 2:
         return await message.reply_text("⚠️ **__Usage:** /del https://google.com__")
-        
+
     await db.remove_url(message.chat.id, message.command[1])
     await message.reply_text("🗑 **__URL Deleted.__**")
 
+
 @Client.on_message(filters.command(["list", "check", "stats"]) & filters.private)
 async def list_cmd(client, message):
-    text, markup = await get_dashboard(message.chat.id, 1)
+    owner_id = message.chat.id
+    text, markup = await get_dashboard(owner_id, 1, owner_id)
     await message.reply_text(text, reply_markup=markup, disable_web_page_preview=True)
 
-# --- Callbacks ---
-@Client.on_callback_query(filters.regex(r"^list_page_(\d+)"))
+    if owner_id in _admin_ids():
+        channel_id = await db.get_dashboard_channel(owner_id)
+        if channel_id:
+            try:
+                await client.send_message(channel_id, text, reply_markup=markup, disable_web_page_preview=True)
+            except Exception as e:
+                await message.reply_text(f"⚠️ Channel send failed: `{e}`")
+
+
+@Client.on_callback_query(filters.regex(r"^list_page_(\d+)_(\-?\d+)$"))
 async def page_callback(client, query):
-    # Standard navigation (Just switch page)
     page = int(query.matches[0].group(1))
-    text, markup = await get_dashboard(query.message.chat.id, page)
-    
+    owner_id = int(query.matches[0].group(2))
+    text, markup = await get_dashboard(query.message.chat.id, page, owner_id)
+
     try:
         await query.edit_message_text(text, reply_markup=markup, disable_web_page_preview=True)
-    except:
+    except Exception:
         await query.answer("Loaded!")
 
-@Client.on_callback_query(filters.regex(r"^force_refresh_(\d+)"))
+
+@Client.on_callback_query(filters.regex(r"^force_refresh_(\d+)_(\-?\d+)$"))
 async def force_refresh_callback(client, query):
     page = int(query.matches[0].group(1))
-    user_id = query.from_user.id
-    
-    # 1. Show feedback immediately
+    owner_id = int(query.matches[0].group(2))
+
     await query.answer("🔄 Force Checking all URLs...", show_alert=False)
-    
-    # 2. Force Check Logic
-    # We set 'next_check' to 0 so the monitor loop picks them up immediately
-    await db.col.update_many(
-        {"user_id": user_id},
-        {"$set": {"next_check": 0}}
-    )
-    
-    # 3. Wait a moment for the background worker (monitor.py runs every 5s)
+
+    await db.col.update_many({"user_id": owner_id}, {"$set": {"next_check": 0}})
     await asyncio.sleep(2)
-    
-    # 4. Reload the dashboard with new stats
-    text, markup = await get_dashboard(user_id, page)
+
+    text, markup = await get_dashboard(query.message.chat.id, page, owner_id)
     try:
         await query.edit_message_text(text, reply_markup=markup, disable_web_page_preview=True)
-    except:
+    except Exception:
         pass
 
-# --- Edit Commands ---
+
 COMMANDS_TEXT = """
 start - 🚀 𝘊𝘩𝘦𝘤𝘬 𝘉𝘰𝘵 𝘈𝘭𝘪𝘷𝘦
-add - ✅ 𝘈𝘥𝘥 𝘢 𝘕𝘦𝘸 𝘜𝘙𝘓
+add - ✅ 𝘈𝘥𝘥 𝘜𝘙𝘓 + 𝘕𝘢𝘮𝘦
 del - 🚫 𝘋𝘦𝘭𝘦𝘵𝘦 𝘢𝘯 𝘜𝘙𝘓
 stats - ⁉️ 𝘊𝘩𝘦𝘤𝘬 𝘚𝘵𝘢𝘵𝘶𝘴 𝘰𝘧 𝘜𝘙𝘓𝘴
+add_channel - 📢 𝘚𝘦𝘵 𝘋𝘢𝘴𝘩𝘣𝘰𝘢𝘳𝘥 𝘊𝘩𝘢𝘯𝘯𝘦𝘭
 """
+
 
 @Client.on_message(filters.command("setcmd") & filters.user(ADMIN))
 async def set_commands(client, message):
     commands = []
-    
-    # Parse the text block line by line
+
     for line in COMMANDS_TEXT.strip().split("\n"):
         if "-" in line:
             cmd, desc = line.split("-", 1)
